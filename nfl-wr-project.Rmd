@@ -1,0 +1,258 @@
+---
+title: "NFL Wide Receiver Combine Analysis"
+output:
+  html_document:
+    theme: flatly
+    highlight: tango
+    toc: true
+    toc_float: true
+    df_print: paged
+date: "2026-09-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,       # show code
+  comment = "",       # drop the "##" prefix on printed output
+  message = FALSE,    # hide package/import chatter (e.g. readr's column-spec messages)
+  warning = FALSE      # hide non-fatal warnings from cluttering the report
+)
+```
+
+## Overview
+
+**Question:** Do NFL Scouting Combine metrics predict a wide receiver's career
+success, measured as Approximate Value (AV) per season?
+
+**Data sources:**
+
+- `data/sportsref_download.xlsx` — career stats for wide receivers drafted
+  2000 or later (Pro Football Reference / Stathead)
+- `data/NFL_Combine_Since_2000.csv` — combine testing results, 2000–2025
+  (Kaggle: `isaaksipple/nfl-combine-2000-2025`)
+
+The analysis below loads and merges these two sources, visualizes each
+combine metric against career AV per season, and fits a few linear
+regression models to see which metrics (if any) are meaningful predictors.
+
+```{r libraries, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(readxl)
+library(stringr)
+```
+
+## 1. Load data
+
+Read in the raw career-stats and combine-testing files.
+
+```{r load-data}
+career_data <- read_excel("data/sportsref_download.xlsx")
+combine_data <- read_csv("data/NFL_Combine_Since_2000.csv")
+```
+
+## 2. Filter to wide receivers
+
+Both datasets cover every position, so we narrow each one down to wide
+receivers. On the career side we also drop anyone drafted before 2000,
+since that's the range the combine data covers.
+
+```{r filter-wr}
+combine_wr <- combine_data %>%
+  filter(Position == "WR")
+
+career_wr <- career_data %>%
+  filter(Pos == "WR", From >= 2000)
+```
+
+## 3. Standardize player names for joining
+
+Player names differ slightly between sources (periods, suffixes like
+Jr./II/III), so we normalize both sides before joining on name + draft
+year.
+
+```{r clean-names}
+clean_names <- function(x) {
+  x %>%
+    str_to_lower() %>%
+    str_replace_all("\\.", "") %>%
+    str_replace_all(" jr", "") %>%
+    str_replace_all(" iii", "") %>%
+    str_replace_all(" ii", "") %>%
+    str_squish()
+}
+
+career_wr$Player <- clean_names(career_wr$Player)
+combine_wr$Player <- clean_names(combine_wr$Player)
+```
+
+## 4. Merge career outcomes with combine testing data
+
+Join on player name and draft year (`From` on the career side matches
+`Year` on the combine side), then clean up the resulting column names and
+derive `AV_per_season` — the outcome variable used throughout the rest of
+the analysis — as career AV divided by number of seasons played.
+
+```{r merge-data}
+merged_data <- inner_join(
+  career_wr, combine_wr,
+  by = c("Player", "From" = "Year")
+) %>%
+  distinct() %>%
+  rename(
+    Career_AV      = `AV...3`,
+    Forty          = `40-yd Dash`,
+    Vertical_Jump  = `Vertical Jump`,
+    Bench_Press    = `Bench Press`,
+    Broad_Jump     = `Broad Jump`,
+    Cone_Drill     = `3-Cone Drill`,
+    Shuttle        = `20-yd Shuttle`,
+    Draft_Team     = Team.y
+  ) %>%
+  select(-Team.x, -Rk, -Position, -AV...9) %>%
+  mutate(
+    Seasons       = To - From + 1,
+    AV_per_season = Career_AV / Seasons
+  )
+
+combine_metrics <- c("Forty", "Vertical_Jump", "Bench_Press",
+                      "Broad_Jump", "Cone_Drill", "Shuttle")
+
+merged_data[combine_metrics] <- lapply(merged_data[combine_metrics], as.numeric)
+
+cat("Merged dataset:", nrow(merged_data), "wide receivers\n")
+```
+
+## 5. Visualize each combine metric vs. career performance
+
+For each combine metric we plot AV per season against that metric with a
+linear trend line. Timed drills (40-yard dash, 3-cone, shuttle) have their
+x-axis reversed, since a *lower* time is the better athletic outcome —
+this keeps "better performance" pointing the same direction (right) across
+every plot.
+
+```{r save-plots}
+combine_untimed_metrics <- c("Vertical_Jump", "Bench_Press", "Broad_Jump")
+combine_timed_metrics   <- c("Forty", "Cone_Drill", "Shuttle")
+
+dir.create("plots", showWarnings = FALSE)
+
+for (metric in combine_untimed_metrics) {
+  p <- ggplot(merged_data, aes(x = .data[[metric]], y = AV_per_season)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE) +
+    labs(title = paste(metric, "vs AV Per Season"), x = metric, y = "AV Per Season")
+  ggsave(filename = paste0("plots/", metric, "_vs_AV.png"), plot = p, width = 8, height = 6)
+}
+
+for (metric in combine_timed_metrics) {
+  # Lower (faster) times are better, so the x-axis is reversed for readability
+  p <- ggplot(merged_data, aes(x = .data[[metric]], y = AV_per_season)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE) +
+    scale_x_reverse() +
+    labs(title = paste(metric, "vs AV Per Season"), x = metric, y = "AV Per Season")
+  ggsave(filename = paste0("plots/", metric, "_vs_AV.png"), plot = p, width = 8, height = 6)
+}
+```
+
+The loop above saves each plot as a PNG to `plots/` (useful for reuse
+elsewhere), but doesn't display them inline in this report. The chunk below
+renders each one directly in the knitted document so the plots and their
+regression context sit together.
+
+```{r show-plots, message=FALSE, warning=FALSE}
+for (metric in c(combine_untimed_metrics, combine_timed_metrics)) {
+  reverse_axis <- metric %in% combine_timed_metrics
+  p <- ggplot(merged_data, aes(x = .data[[metric]], y = AV_per_season)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = FALSE) +
+    labs(title = paste(metric, "vs AV Per Season"), x = metric, y = "AV Per Season")
+  if (reverse_axis) p <- p + scale_x_reverse()
+  print(p)
+}
+```
+
+## 6. Regression models
+
+Three linear models test different subsets of combine metrics as
+predictors of `AV_per_season`:
+
+- **Full model** — all six combine metrics together
+- **Speed model** — just the three timed drills (40-yard dash, shuttle,
+  3-cone)
+- **Explosion model** — just the two jump metrics (vertical, broad)
+
+For each, `summary()` reports the coefficient estimates, their standard
+errors, t-values, and p-values (is each metric individually a significant
+predictor once the others are accounted for), along with the model's
+overall R-squared (how much of the variance in AV per season the model
+explains) and F-statistic (whether the model as a whole is a significant
+predictor).
+
+```{r regression-full}
+full_model <- lm(
+  AV_per_season ~ Forty + Vertical_Jump + Bench_Press + Broad_Jump + Cone_Drill + Shuttle,
+  data = merged_data
+)
+summary(full_model)
+```
+
+```{r regression-speed}
+speed_model <- lm(
+  AV_per_season ~ Forty + Shuttle + Cone_Drill,
+  data = merged_data
+)
+summary(speed_model)
+```
+
+```{r regression-explosion}
+explosion_model <- lm(
+  AV_per_season ~ Vertical_Jump + Broad_Jump,
+  data = merged_data
+)
+summary(explosion_model)
+```
+
+**Reading these results:** look at each model's R-squared to see how much
+of the spread in career AV per season it accounts for, and check which
+individual predictors have p-values below 0.05 (conventionally
+"significant") to see whether any single combine metric stands out. Given
+these are raw combine numbers predicting a noisy, multi-year career outcome,
+don't expect a very high R-squared — the interesting part is usually the
+*relative* pattern across the three models (e.g., does the speed model or
+the explosion model explain more, and does any individual metric hold up
+once the others are controlled for).
+
+## 7. Combined explosion score
+
+As a follow-up, we combine vertical jump and broad jump into a single
+"Explosion Score" and plot it against career AV per season.
+
+```{r explosion-score}
+merged_data <- merged_data %>%
+  mutate(Explosion_Score = Vertical_Jump + Broad_Jump)
+
+explosion_plot <- ggplot(merged_data, aes(x = Explosion_Score, y = AV_per_season)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  labs(
+    title = "Explosion Score (Vertical + Broad Jump) vs AV Per Season",
+    x = "Explosion Score",
+    y = "AV Per Season"
+  )
+ggsave("plots/Explosion_Score_vs_AV.png", plot = explosion_plot, width = 8, height = 6)
+
+explosion_plot
+```
+
+## Summary
+
+This report walked through: merging combine testing data with career
+outcomes for WRs drafted since 2000, visualizing each combine metric
+against career AV per season, and fitting three regression models (full,
+speed-only, explosion-only) to test which combine metrics best predict
+career success. The regression tables above are the core results — refer
+to each model's R-squared and per-metric p-values to judge which combine
+metrics, if any, carry predictive signal for WR career performance.

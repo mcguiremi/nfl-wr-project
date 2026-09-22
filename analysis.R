@@ -55,7 +55,7 @@ merged_data <- inner_join(
 ) %>%
   distinct() %>%
   rename(
-    Career_AV      = AV,
+    Career_AV      = `AV...3`,
     Forty          = `40-yd Dash`,
     Vertical_Jump  = `Vertical Jump`,
     Bench_Press    = `Bench Press`,
@@ -64,7 +64,7 @@ merged_data <- inner_join(
     Shuttle        = `20-yd Shuttle`,
     Draft_Team     = Team.y
   ) %>%
-  select(-Team.x, -Rk, -Position, -AV.1) %>%
+  select(-Team.x, -Rk, -Position, -AV...9) %>%
   mutate(
     Seasons       = To - From + 1,
     AV_per_season = Career_AV / Seasons
